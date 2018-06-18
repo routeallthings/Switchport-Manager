@@ -56,6 +56,23 @@ except ImportError:
 		print 'Exiting in 5 seconds'
 		time.sleep(5)
 		sys.exit()		
+# PyPiWin32
+try:
+	import win32com.client
+except ImportError:
+	win32cominstallstatus = raw_input ('PyPiWin32 module is missing, would you like to automatically install? (Y/N): ')
+	if 'y' in win32cominstallstatus.lower():
+		os.system('python -m pip install pypiwin32')
+		os.system('python -m pip install pywin32')
+		print 'You need to restart the script after installing win32com'
+		print 'Exiting in 5 seconds'
+		time.sleep(5)
+		sys.exit()
+	else:
+		print 'You selected an option other than yes. Please be aware that this script requires the use of PyPiWin32. Please install manually and retry'
+		print 'Exiting in 5 seconds'
+		time.sleep(5)
+		sys.exit()		
 #
 try:
 	import fileinput
@@ -153,7 +170,7 @@ def RestartPort(device,vendormac):
 		except:
 			'''Nothing'''
 
-def SetVLAN(device,vendormac,vendorvlan,vendorvlanmod):
+def SetVLAN(device,vendormac,vendorvlan,vendorvlanmod,vendortemplate):
 	deviceip = device.get('IP').encode('utf-8')
 	devicevendor = device.get('Vendor').encode('utf-8')
 	devicetype = device.get('Type').encode('utf-8')
@@ -200,9 +217,11 @@ def SetVLAN(device,vendormac,vendorvlan,vendorvlanmod):
 				if modifyvlan == 1 and notrunk == 1:
 					iport = 'interface ' + vlaninterface
 					ivlan = 'switchport access vlan ' + vendorvlanmod
+					itemplate = 'source template ' + vendortemplate
 					sshcommandset.append(iport)
 					sshcommandset.append(ivlan)
-		if modifyvlan == 1:
+					sshcommandset.append(itemplate)
+		if modifyvlan == 1 and sshcommandset != []:
 			FullOutput = sshnet_connect.send_config_set(sshcommandset)
 			OutputLogp = loglocation + '\\' + devicehostname + '_portvlan.txt'
 			if os.path.exists(OutputLogp):
@@ -215,6 +234,69 @@ def SetVLAN(device,vendormac,vendorvlan,vendorvlanmod):
 			OutputLog.write(FullOutput)
 			OutputLog.write('\n')
 			OutputLog.close()
+		sshnet_connect.disconnect()
+	except Exception as e:
+		print 'Error with sending commands to ' + deviceip + '. Error is ' + str(e)
+		try:
+			sshnet_connect.disconnect()
+		except:
+			'''Nothing'''
+	except KeyboardInterrupt:
+		print 'CTRL-C pressed, exiting update of switches'
+		try:
+			sshnet_connect.disconnect()
+		except:
+			'''Nothing'''
+			
+def SetTemplate(device,vendorvlan,vendortemplate):
+	deviceip = device.get('IP').encode('utf-8')
+	devicevendor = device.get('Vendor').encode('utf-8')
+	devicetype = device.get('Type').encode('utf-8')
+	devicetype = devicevendor.lower() + "_" + devicetype.lower()
+	#Start Connection
+	try:
+		sshnet_connect = ConnectHandler(device_type=devicetype, ip=deviceip, username=sshusername, password=sshpassword, secret=enablesecret)
+		devicehostname = sshnet_connect.find_prompt()
+		devicehostname = devicehostname.strip('#')
+		if '>' in devicehostname:
+			sshnet_connect.enable()
+			devicehostname = devicehostname.strip('>')
+			devicehostname = sshnet_connect.find_prompt()
+			devicehostname = devicehostname.strip('#')
+		showinterfacelist = 'sh ip int br | e Vlan|Tunnel|Loopback|Port-channel|GigabitEthernet0/0|Interface'
+		fullinterfacelist = sshnet_connect.send_command(showinterfacelist)
+		if fullinterfacelist == '':
+			sys.exit()
+		fullinterfacelist = fullinterfacelist.split('\n')
+		for fullint in fullinterfacelist:
+			sshcommandset = []
+			sourcevlan = ''
+			sourcetemplate = ''
+			settemplatecmd = 'sh run interface ' + fullint + ' | i (source template)'
+			sourcetemplatessh = sshnet_connect.send_command(settemplatecmd)
+			sourcetemplate = re.search('\S+\s+\S+\s+(\S+)',sourcetemplatessh)
+			sourcetemplate = sourcetemplate.group(1)
+			setvlancmd = 'sh der interface ' + fullint + ' | i (access vlan)'
+			sourcevlanssh = sshnet_connect.send_command(settemplatecmd)
+			sourcevlan = re.search('switchport\s+access\s+vlan\s+(\S+)',sourcevlanssh)
+			sourcevlan = sourcevlan.group(1)
+			if sourcetemplate != vendortemplate and sourcevlan == vendorvlan:
+				iport = 'interface ' + vlaninterface
+				itemplate = 'source template ' + vendortemplate
+				sshcommandset.append(iport)
+				sshcommandset.append(itemplate)
+				FullOutput = sshnet_connect.send_config_set(sshcommandset)
+				OutputLogp = loglocation + '\\' + devicehostname + '_portvlan.txt'
+				if os.path.exists(OutputLogp):
+					OutputLog = open(OutputLogp,'a+')
+				else:
+					OutputLog = open(OutputLogp,'w+')
+				OutputLog.write('#################################################################\n')
+				OutputLog.write('Start of Log\n')
+				OutputLog.write('Current Start Time: ' + str(datetime.now()) + '\n')
+				OutputLog.write(FullOutput)
+				OutputLog.write('\n')
+				OutputLog.close()
 		sshnet_connect.disconnect()
 	except Exception as e:
 		print 'Error with sending commands to ' + deviceip + '. Error is ' + str(e)
@@ -245,11 +327,64 @@ def ExportVLANs(device):
 			devicehostname = sshnet_connect.find_prompt()
 			devicehostname = devicehostname.strip('#')
 		devicehostnames.append(devicehostname)
+		# Get VRFs
+		vrflist = []
+		showvrfcmd = 'show vrf | i ipv4'
+		showvrf = sshnet_connect.send_command(showvrfcmd)
+		showvrf = showvrf.split('\n')
+		try:
+			vrfcount = 0
+			for v in showvrf:
+				if not 'Mgmt-vrf' in v:
+					vrf1 = re.search('(\S+)\s+.*',v)
+					vrf1 = vrf1.group(1)
+					vrflist.append(vrf1)
+					vrfcount = vrfcount + 1
+			if vrfcount == 0:
+				vrffound = 0
+			else:
+				vrffound = 1
+		except:
+			vrffound = 0
+		# Get Interface Dictionary
+		#intbrlist = []
+		#showintbrcmd = 'show ip int br | e unassigned|Method'
+		#showintbrssh = sshnet_connect.send_command(showintbrcmd)
+		#showintbrssh = showintbrssh.split('\n')
+		#for intbr in showintbrssh:
+		#	intbrreg = re.search('(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)',intbr)
+		#	intbrint = intbrreg.group(1)
+		#	intbrvrfcmd = 'show running int ' + intbrint + ' | i forwarding'
+		#	if not intbrvrfcmd = ''
+		#		intbrvrf = 
+		
+		
+		
+		# Get Interfaces
 		showinterfacelist = 'sh ip int br | e Vlan|Tunnel|Loopback|Port-channel|GigabitEthernet0/0|Interface'
 		fullinterfacelist = sshnet_connect.send_command(showinterfacelist)
 		if fullinterfacelist == '':
 			sys.exit()
 		fullinterfacelist = fullinterfacelist.split('\n')
+		# Show mac address dictionary newmethod
+		#macaddlist = []
+		#showmaccmd = 'show mac address-table | e -|CPU|Address|Vl'
+		#showmaclist = sshnet_connect.send_command(showmaccmd)
+		#showmaclist = showmaclist.split('\n')
+		#for mac in showmaclist:
+		#	if not mac == '':
+		#		macadddict = {}
+		#		fullmacline = re.search('(\S+)\s+(\S+)\s+(\S+)\s+(\S+)',mac)
+		#		vlanmac = fullmacline.group(1)
+		#		addmac = fullmacline.group(2)
+		#		intmac = fullmacline.group(4)
+		#		macadddict['VLAN'] = vlanmac
+		#		macadddict['ADD'] = addmac
+		#		macadddict['INT'] = intmac
+		#		macaddlist.append(macadddict)
+		#		vlanmac = ''
+		#		addmac = ''
+		#		intmac = ''
 		for fullint in fullinterfacelist:
 			interfacedictionary = {}
 			fullintreg = re.search('(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)',fullint)
@@ -262,6 +397,12 @@ def ExportVLANs(device):
 			except:
 				intstatus = ''
 			if 'up' in intstatus:
+				showmac = ''
+				intmac = ''
+				intip = ''
+				#for macd in macaddlist:
+				#	if macd['INT'] == intname:
+				#		intmac = macd['ADD']
 				showmaccmd = 'show mac address-table interface ' + intname + ' | include /'
 				showmac = sshnet_connect.send_command(showmaccmd)
 				showmac = re.search('(\S+)\s+(\S+)\s+(\S+)\s+(\S+)',showmac)
@@ -269,8 +410,31 @@ def ExportVLANs(device):
 					intmac = showmac.group(2)
 				except:
 					intmac = 'No MAC or Error'
+					intip = ''
+					continue
+				try:
+					if vrffound == 0:
+						showipcmd = 'show ip arp | i ' + intmac
+						showip = sshnet_connect.send_command(showipcmd)
+					if vrffound == 1:
+						for v in vrflist:
+							showipcmd = 'show ip arp vrf ' + v + ' | i ' + intmac
+							showip = sshnet_connect.send_command(showipcmd)
+							if showip != '':
+								intvrf = v
+								break
+						if showip == '':
+							showipcmd = 'show ip arp | i ' + intmac
+							showip = sshnet_connect.send_command(showipcmd)
+							intvrf = ''
+					showip = re.search('\S+\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*',showip)
+					intip = showip.group(1)
+				except:
+					intip = ''
 			else:
 				intmac = ''
+				intip = ''
+				intvrf = ''
 			showrunintcmd = 'show running-config interface ' + intname
 			try:
 				showrunint = sshnet_connect.send_command(showrunintcmd)
@@ -295,11 +459,24 @@ def ExportVLANs(device):
 			except:
 				intvlan = ''
 				inttemplate = ''
+			if intvrf == '' and not intvlan == '':
+				showintvrfcmd = 'show running interface ' + intvlan + ' | vrf'
+				vrfintresult = sshnet_connect.send_command(showintvrfcmd)
+				if not vrfintresult == '':
+					intvrfssh = re.search('(\S+)\s+(\S+)\s+(\S+)',vrfintresult)
+					try:
+						intvrf = intvlan.group(3)
+					except:
+						intvrf = ''
+				else:
+					intvrf = 'Default'
 			interfacedictionary['Hostname'] = devicehostname
 			interfacedictionary['Interface'] = intname
 			interfacedictionary['VLAN'] = intvlan
 			interfacedictionary['Status'] = intstatus
 			interfacedictionary['MacAddress'] = intmac
+			interfacedictionary['IPAddress'] = intip
+			interfacedictionary['VRF'] = intvrf
 			interfacedictionary['Template'] = inttemplate
 			finalinterfacelist.append(interfacedictionary) 
 		sshnet_connect.disconnect()
@@ -365,6 +542,9 @@ vendorvlan = str(vendorvlan)
 if ',' in vendorvlan:
 	vendorvlan = vendorvlan.split(',')
 vendorvlanmod = vendorvlan
+vendortemplate = configdict.get('VendorTemplate')
+if not vendortemplate == None:
+	vendortemplate = str(vendortemplate)
 exportlocation = configdict.get('ExportLocation')
 if exportlocation == None:
 	exportlocation = raw_input('Please enter the file path for the report (e.g. C:\Scripts\SWManager):')
@@ -399,12 +579,13 @@ print '###  1. Restart all vendor mac ports          ###'
 print '###  2. Report VLAN for all vendor mac ports  ###'
 print '###  3. Update VLAN for all vendor mac ports  ###'
 print '###  4. Change the vendor mac address         ###'
-print '###  5. Export Report to CSV of assignment    ###'
-print '###  6. Exit                                  ###'
+print '###  5. Update the template on the port       ###'
+print '###  6. Export Report to CSV of assignment    ###'
+print '###  7. Exit                                  ###'
 print '###                                           ###'
 print '#################################################'
 print ''
-menuoption = raw_input('Selection (1-6)?:')
+menuoption = raw_input('Selection (1-7)?:')
 if menuoption == '':
 	menuoption = 6
 menuoption = int(menuoption)
@@ -425,8 +606,12 @@ else:
 if menuoption == 4:
 		vendormac = raw_input('Please enter the first 6 characters of the vendor mac you want to match on?: ')
 # Start
-while (menuoption < 6):
+
+
+
+while (menuoption < 7):
 	if menuoption == 1:
+		threadstartime = datetime.now()
 		if __name__ == "__main__":
 			# Start Threads
 			print 'Starting restart of all devices based on vendor mac'
@@ -440,13 +625,19 @@ while (menuoption < 6):
 				if it_thread != main_thread:
 					it_thread.join()
 		print 'Successfully restarted all ports based on vendor mac'
+		print 'Successfully changed or viewed the vlan on all ports based on vendor mac'
+		threadendtime = datetime.now()
+		threadtime = threadendtime - threadstartime
+		threadsec = threadtime.seconds
+		print 'Elapsed time ' + str(threadsec) + ' seconds.'
 	if menuoption == 2 or menuoption == 3:
-		if __name__ == "__main__":
+		threadstartime = datetime.now()
+		if __name__ == "__main__":	
 		# Start Threads
 			print 'Starting comparison/update of switchport based on vendor mac'
 			for device in devicelist:	
 				deviceip = device.get('IP').encode('utf-8')
-				t = threading.Thread(target=SetVLAN, args=(device,vendormac,vendorvlan,vendorvlanmod))
+				t = threading.Thread(target=SetVLAN, args=(device,vendormac,vendorvlan,vendorvlanmod,vendortemplate))
 				t.start()
 			main_thread = threading.currentThread()
 			# Join All Threads
@@ -454,10 +645,34 @@ while (menuoption < 6):
 				if it_thread != main_thread:
 					it_thread.join()
 		print 'Successfully changed or viewed the vlan on all ports based on vendor mac'
+		threadendtime = datetime.now()
+		threadtime = threadendtime - threadstartime
+		threadsec = threadtime.seconds
+		print 'Elapsed time ' + str(threadsec) + ' seconds.'
 	if menuoption == 5:
+		threadstartime = datetime.now()
 		if __name__ == "__main__":
 		# Start Threads
-			print 'Starting export to CSV of all switchports'
+			print 'Starting comparison/update of template to vlan'
+			for device in devicelist:	
+				deviceip = device.get('IP').encode('utf-8')
+				t = threading.Thread(target=SetTemplate, args=(device,vendorvlan,vendortemplate))
+				t.start()
+			main_thread = threading.currentThread()
+			# Join All Threads
+			for it_thread in threading.enumerate():
+				if it_thread != main_thread:
+					it_thread.join()
+		print 'Successfully changed or viewed the vlan on all ports based on vendor mac'
+		threadendtime = datetime.now()
+		threadtime = threadendtime - threadstartime
+		threadsec = threadtime.seconds
+		print 'Elapsed time ' + str(threadsec) + ' seconds.'
+	if menuoption == 6:
+		if __name__ == "__main__":
+		# Start Threads
+			print 'Starting to gather data on switches'
+			threadstartime = datetime.now()
 			for device in devicelist:	
 				deviceip = device.get('IP').encode('utf-8')
 				t = threading.Thread(target=ExportVLANs, args=(device,))
@@ -479,6 +694,7 @@ while (menuoption < 6):
 				skipmac = 1
 				print 'Could not load MAC database. Error is ' + str(e)		
 			try:
+				print 'Starting export to XLS of all switchports'
 				wb = Workbook()
 				dest_filename = 'VLAN-Report.xlsx'
 				dest_path = exportlocation + '\\' + dest_filename
@@ -490,7 +706,7 @@ while (menuoption < 6):
 				ws1 = wb.active
 				# Continue on with work
 				ws1.title = "VLAN Export"
-				ws1.append(['Hostname','Interface','VLAN','Port Status','MacAddress','MacVendor','Template'])
+				ws1.append(['Hostname','Interface','VLAN','Port Status','MacAddress','MacVendor','IPAddress','VRF','Template'])
 				startrow = 2
 				for row in finalinterfacelist:
 					vendormac = row.get('MacAddress')
@@ -514,15 +730,42 @@ while (menuoption < 6):
 					ws1['D' + str(startrow)] = row.get('Status')
 					ws1['E' + str(startrow)] = row.get('MacAddress')
 					ws1['F' + str(startrow)] = maccompany
-					ws1['G' + str(startrow)] = row.get('Template')
+					ws1['G' + str(startrow)] = row.get('IPAddress')
+					ws1['H' + str(startrow)] = row.get('VRF')
+					ws1['I' + str(startrow)] = row.get('Template')
 					startrow = startrow + 1
 				wb.add_named_style(HeaderStyle)
+				# Set Column Width
+				for col in ws1.columns:
+					 max_length = 0
+					 column = col[0].column # Get the column name
+					 for cell in col:
+						 try: # Necessary to avoid error on empty cells
+							 if len(str(cell.value)) > max_length:
+								 max_length = len(cell.value)
+						 except:
+							 pass
+					 adjusted_width = (max_length + 2) * 1.2
+					 ws1.column_dimensions[column].width = adjusted_width
 				# Set styles on header row
 				for cell in ws1["1:1"]:
 					cell.style = 'BoldHeader'
 				wb.save(filename = dest_path)
-				wb.save(filename = dest_path)
+				threadendtime = datetime.now()
+				# Sort/filter XLSX, done through win32com
+				sortq = raw_input('Would you like the XLSX file sorted/filtered? It requires Excel/Windows (Y/N): ')
+				if 'y' in sortq.lower():
+					excel = win32com.client.Dispatch("Excel.Application")
+					wb = excel.Workbooks.Open(dest_path)
+					ws = wb.Worksheets('VLAN Export')
+					ws.Range('A2:I50000').Sort(Key1=ws.Range('A1'), Order1=1, Orientation=1)
+					ws.Range('A1:I1').AutoFilter(1)
+					wb.Save()
+					excel.Application.Quit()
 				print 'Successfully created VLAN Report'
+				threadtime = threadendtime - threadstartime
+				threadsec = threadtime.seconds
+				print 'Elapsed time ' + str(threadsec) + ' seconds.'
 			except Exception as e:
 				print 'Error creating VLAN Report. Error is ' + str(e)
 		print 'Successfully exported vlans on all ports to xlsx'
@@ -535,12 +778,13 @@ while (menuoption < 6):
 	print '###  2. Report VLAN for all vendor mac ports  ###'
 	print '###  3. Update VLAN for all vendor mac ports  ###'
 	print '###  4. Change the vendor mac address         ###'
-	print '###  5. Export Report to CSV of assignment    ###'
-	print '###  6. Exit                                  ###'
+	print '###  5. Update the template on the port       ###'
+	print '###  6. Export Report to CSV of assignment    ###'
+	print '###  7. Exit                                  ###'
 	print '###                                           ###'
 	print '#################################################'
 	print ''
-	menuoption = raw_input('Selection (1-5)?:')
+	menuoption = raw_input('Selection (1-7)?:')
 	if menuoption == '':
 		menuoption = 5
 	menuoption = int(menuoption)
@@ -553,7 +797,7 @@ while (menuoption < 6):
 			rowc = 1
 			for v in vendorvlan:
 				print str(rowc) + '. ' + v
-				rowc + 1
+				rowc = rowc + 1
 			vendorvlanmod = raw_input('Please enter the vlan number you want to modify the ports to?: ')
 	else:
 		modifyvlan = 0
