@@ -22,6 +22,7 @@ import csv
 import threading
 import time
 import sys
+import datetime
 from datetime import datetime
 from datetime import date
 
@@ -985,6 +986,30 @@ def HealthCheck(device):
 			devicehostname = sshnet_connect.find_prompt()
 			devicehostname = devicehostname.strip('#')
 		devicehostnames.append(devicehostname)
+		# Parse through POE management and output to folder
+		showpoe = 'show power inline'
+		sshcommand = showpoe
+		sshresult = sshnet_connect.send_command(sshcommand)
+		today = datetime.now()
+		datenum = today.strftime('%m%d%Y-%M')
+		dest_filename = devicehostname + '-POE' + datenum + '.txt'
+		dest_path = exportlocation + '\\' + newfolder + '\\' + dest_filename
+		f = open(dest_path,'w')
+		for line in sshresult:
+			f.write(line)
+		f.close()
+		# Parse through interface drops and output to folder
+		showdrops = 'show int | i (line protocol)|drops'
+		sshcommand = showdrops
+		sshresult = sshnet_connect.send_command(sshcommand)
+		today = datetime.now()
+		datenum = today.strftime('%m%d%Y-%M')
+		dest_filename = devicehostname + '-ShowDrops' + datenum + '.txt'
+		dest_path = exportlocation + '\\' + newfolder + '\\' + dest_filename
+		f = open(dest_path,'w')
+		for line in sshresult:
+			f.write(line)
+		f.close()
 		#Show Interfaces
 		showinterface = 'show interface'
 		sshcommand = showinterface
@@ -1033,7 +1058,7 @@ def HealthCheck(device):
 				if hcshowintsingleint == '':
 					hcshowintsingleint = 0
 				hcshowintsingleint = int(hcshowintsingleint)		
-				if hcshowintsingleint > 10000:
+				if hcshowintsingleint > 100:
 					hcerror = 'Saturated Link'
 					hcinterfacecounter = hcshowintsingle[10]
 					hcinterfacecounter = hcinterfacecounter.encode('utf-8')
@@ -1381,7 +1406,7 @@ while (menuoption < 10):
 				print 'Starting export to XLS of all switchports'
 				wb = Workbook()
 				today = date.today()
-				datenum = today.strftime('%m%d%Y')
+				datenum = today.strftime('%m%d%Y-%S')
 				dest_filename = 'VLAN-Report-' + datenum + '.xlsx'
 				dest_path = exportlocation + '\\' + dest_filename
 				# Multiple Devices Report (Separate Tabbed) WIP
@@ -1465,6 +1490,14 @@ while (menuoption < 10):
 		# Start Threads
 			print 'Starting to gather interface health data on switches'
 			threadstartime = datetime.now()
+			today = datetime.now()
+			datenum = today.strftime('%m%d%Y-%M')
+			newfolder = 'ExportData' + datenum
+			newpath = exportlocation + '\\' + newfolder
+			try:
+				os.mkdir(newpath)
+			except:
+				pass
 			for device in devicelist:	
 				deviceip = device.get('IP').encode('utf-8')
 				t = threading.Thread(target=HealthCheck, args=(device,))
@@ -1477,9 +1510,9 @@ while (menuoption < 10):
 			print 'Exporting Health Reports'
 			wb = Workbook()
 			today = date.today()
-			datenum = today.strftime('%m%d%Y')
+			datenum = today.strftime('%m%d%Y-%S')
 			dest_filename = 'Health-Check-Report-' + datenum + '.xlsx'
-			dest_path = exportlocation + '\\' + dest_filename
+			dest_path = newpath + '\\' + dest_filename
 			ws1 = wb.active
 			# Continue on with work
 			ws1.title = "Health Check"
